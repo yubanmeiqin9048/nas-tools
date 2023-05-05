@@ -57,6 +57,7 @@ App = Flask(__name__)
 App.wsgi_app = ProxyFix(App.wsgi_app)
 App.config['JSON_AS_ASCII'] = False
 App.config['JSON_SORT_KEYS'] = False
+App.config['SOCK_SERVER_OPTIONS'] = {'ping_interval': 25}
 App.secret_key = os.urandom(24)
 App.permanent_session_lifetime = datetime.timedelta(days=30)
 
@@ -211,6 +212,7 @@ def web():
     CustomScriptCfg = SystemConfig().get(SystemConfigKey.CustomScript)
     CooperationSites = current_user.get_authsites()
     Menus = WebAction().get_user_menus().get("menus") or []
+    Commands = WebAction().get_commands()
     return render_template('navigation.html',
                            GoPage=GoPage,
                            CurrentUser=current_user,
@@ -227,7 +229,8 @@ def web():
                            CustomScriptCfg=CustomScriptCfg,
                            CooperationSites=CooperationSites,
                            DefaultPath=DefaultPath,
-                           Menus=Menus)
+                           Menus=Menus,
+                           Commands=Commands)
 
 
 # 开始
@@ -1187,11 +1190,19 @@ def plex_webhook():
         return '不允许的IP地址请求'
     request_json = json.loads(request.form.get('payload', {}))
     log.debug("收到Plex Webhook报文：%s" % str(request_json))
-    # 发送消息
-    ThreadHelper().start_thread(MediaServer().webhook_message_handler,
-                                (request_json, MediaServerType.PLEX))
-    # 触发事件
-    EventManager().send_event(EventType.PlexWebhook, request_json)
+    # 事件类型
+    event_match = request_json.get("event") in ["media.play", "media.stop"]
+    # 媒体类型
+    type_match = request_json.get("Metadata", {}).get("type") in ["movie", "episode"]
+    # 是否直播
+    is_live = request_json.get("Metadata", {}).get("live") == "1"
+    # 如果事件类型匹配,媒体类型匹配,不是直播
+    if event_match and type_match and not is_live:
+        # 发送消息
+        ThreadHelper().start_thread(MediaServer().webhook_message_handler,
+                                    (request_json, MediaServerType.PLEX))
+        # 触发事件
+        EventManager().send_event(EventType.PlexWebhook, request_json)
     return 'Ok'
 
 
@@ -1654,21 +1665,27 @@ def logging_handler(ws):
     """
     实时日志WebSocket
     """
+    source = ""
     while True:
+        message = ws.receive()
+        if not message:
+            continue
         try:
-            message = ws.receive()
             _source = json.loads(message).get("source")
-            if log.LOG_INDEX > 0:
-                logs = list(log.LOG_QUEUE)[-log.LOG_INDEX:]
-                log.LOG_INDEX = 0
-                if _source:
-                    logs = [l for l in logs if l.get("source") == _source]
-                ws.send((json.dumps(logs)))
-            else:
-                ws.send(json.dumps([]))
         except Exception as err:
             print(str(err))
-            break
+            continue
+        if _source != source:
+            log.LOG_INDEX = len(log.LOG_QUEUE)
+            source = _source
+        if log.LOG_INDEX > 0:
+            logs = list(log.LOG_QUEUE)[-log.LOG_INDEX:]
+            log.LOG_INDEX = 0
+            if _source:
+                logs = [l for l in logs if l.get("source") == _source]
+        else:
+            logs = []
+        ws.send((json.dumps(logs)))
 
 
 @Sock.route('/message')
@@ -1678,39 +1695,41 @@ def message_handler(ws):
     消息中心WebSocket
     """
     while True:
+        data = ws.receive()
+        if not data:
+            continue
         try:
-            data = ws.receive()
             msgbody = json.loads(data)
-            if msgbody.get("text"):
-                # 发送的消息
-                WebAction().handle_message_job(msg=msgbody.get("text"),
-                                               in_from=SearchType.WEB,
-                                               user_id=current_user.username,
-                                               user_name=current_user.username)
-                ws.send((json.dumps({})))
-            else:
-                # 拉取消息
-                system_msg = WebAction().get_system_message(lst_time=msgbody.get("lst_time"))
-                messages = system_msg.get("message")
-                lst_time = system_msg.get("lst_time")
-                ret_messages = []
-                for message in list(reversed(messages)):
-                    content = re.sub(r"#+", "<br>",
-                                     re.sub(r"<[^>]+>", "",
-                                            re.sub(r"<br/?>", "####", message.get("content"), flags=re.IGNORECASE)))
-                    ret_messages.append({
-                        "level": "bg-red" if message.get("level") == "ERROR" else "",
-                        "title": message.get("title"),
-                        "content": content,
-                        "time": message.get("time")
-                    })
-                ws.send((json.dumps({
-                    "lst_time": lst_time,
-                    "message": ret_messages
-                })))
         except Exception as err:
             print(str(err))
-            break
+            continue
+        if msgbody.get("text"):
+            # 发送的消息
+            WebAction().handle_message_job(msg=msgbody.get("text"),
+                                           in_from=SearchType.WEB,
+                                           user_id=current_user.username,
+                                           user_name=current_user.username)
+            ws.send((json.dumps({})))
+        else:
+            # 拉取消息
+            system_msg = WebAction().get_system_message(lst_time=msgbody.get("lst_time"))
+            messages = system_msg.get("message")
+            lst_time = system_msg.get("lst_time")
+            ret_messages = []
+            for message in list(reversed(messages)):
+                content = re.sub(r"#+", "<br>",
+                                 re.sub(r"<[^>]+>", "",
+                                        re.sub(r"<br/?>", "####", message.get("content"), flags=re.IGNORECASE)))
+                ret_messages.append({
+                    "level": "bg-red" if message.get("level") == "ERROR" else "",
+                    "title": message.get("title"),
+                    "content": content,
+                    "time": message.get("time")
+                })
+            ws.send((json.dumps({
+                "lst_time": lst_time,
+                "message": ret_messages
+            })))
 
 
 # base64模板过滤器

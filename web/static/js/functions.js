@@ -30,6 +30,11 @@ let LoggingWS;
 let OldMessageFlag = true;
 // 消息WebSocket
 let MessageWS;
+// 当前协议
+let WSProtocol = "ws://";
+if (window.location.protocol === "https:") {
+  WSProtocol = "wss://"
+}
 
 
 /**
@@ -83,11 +88,11 @@ function navmenu(page, newflag = false) {
         // 刷新filetree控件
         init_filetree_element();
       }
-      if (page !== CURRENT_PAGE_URI) {
+      if (page !== CurrentPageUri) {
         // 切换页面时滚动到顶部
         $(window).scrollTop(0);
         // 记录当前页面ID
-        CURRENT_PAGE_URI = page;
+        CurrentPageUri = page;
       }
       // 并记录当前历史记录
       window_history(!newflag);
@@ -124,12 +129,20 @@ function hide_wait_modal() {
   $("#modal-wait").modal("hide");
 }
 
-//发送刷新日志请求
+// 连接日志服务
+function connect_logging() {
+  LoggingWS = new ReconnectingWebSocket(WSProtocol + window.location.host + '/logging');
+  LoggingWS.onmessage = function (event) {
+    render_logging(JSON.parse(event.data))
+  };
+}
+
+// 发送刷新日志请求
 function get_logging() {
   LoggingWS.send(JSON.stringify({"source": LoggingSource}));
 }
 
-//刷新日志
+// 刷新日志
 function render_logging(log_list) {
   if (log_list) {
     let tdstyle = "padding-top: 0.5rem; padding-bottom: 0.5rem";
@@ -186,7 +199,7 @@ function render_logging(log_list) {
   }
 }
 
-//暂停实时日志
+// 暂停实时日志
 function pause_logging() {
   let btn = $("#logging_stop_btn")
   if (btn.text() === "暂停") {
@@ -201,19 +214,14 @@ function pause_logging() {
 
 // 显示实时日志
 function show_logging_modal() {
+  // 显示窗口
   $("#logging_stop_btn").text("暂停");
   $('#modal-logging').modal('show');
+  // 连接日志服务
+  connect_logging();
+  // 开始获取日志
   RefreshLoggingFlag = true;
   setTimeout("get_logging()", 1000);
-}
-
-// 渲染日志来源下拉列表
-function get_logging_source() {
-  $("#dropdown-menu-logger").html('')
-  let menu = ['All', 'System', 'Rss', 'Rmt', 'Meta', 'Sync', 'Sites', 'Brush', 'Douban', 'Spider', 'Message', 'Indexer', 'Searcher', 'Subscribe', 'Downloader', 'TorrentRemover', 'Plugin']
-  for (let i = 0; i < menu.length; i++) {
-    $("#dropdown-menu-logger").append(`<a class="dropdown-item"  href="javascript:logger_select('${menu[i]}')">${menu[i]}</a>`);
-  }
 }
 
 // 日志来源筛选
@@ -222,33 +230,56 @@ function logger_select(source) {
   if (LoggingSource === "All") {
     LoggingSource = "";
   }
-  $("#logging_content").html("")
+  let logtype = `刷新中...`;
+  if (LoggingSource) {
+    logtype = `【${LoggingSource}】刷新中...`;
+  }
+  $("#logging_content").html(`<tr><td colspan="3" class="text-center">${logtype}</td></tr>`);
+  // 拉取新日志
+  get_logging();
 }
 
-//刷新消息中心
+// 连接消息服务
+function connect_message() {
+  MessageWS = new ReconnectingWebSocket(WSProtocol + window.location.host + '/message');
+  MessageWS.onmessage = function (event) {
+    render_message(JSON.parse(event.data))
+  };
+  MessageWS.onopen = function (event) {
+    get_message('');
+  };
+
+}
+
+// 刷新消息中心
 function render_message(ret) {
   let lst_time = ret.lst_time;
   const msgs = ret.message;
   for (let msg of msgs) {
+    // 消息UI
     let html_text = `<div class="list-group-item">
           <div class="row align-items-center">
             <div class="col-auto">
-              <span class="avatar">N</span>
+              <span class="avatar">NT</span>
             </div>
             <div class="col text-truncate">
               <span class="text-wrap">${msg.title}</span>
-              <div class="d-block text-muted text-truncate mt-n1 text-wrap" title="${msg.content}">${msg.content}</div>
+              <div class="d-block text-muted text-truncate mt-n1 text-wrap">${msg.content}</div>
               <div class="d-block text-muted text-truncate mt-n1 text-wrap">${msg.time}</div>
             </div>
           </div>
         </div>`;
     $("#system-messages").prepend(html_text);
-    if (!OldMessageFlag) {
+    // 滚动到顶部
+    $(".offcanvas-body").animate({scrollTop:0}, 300);
+    // 浏览器消息提醒
+    if (!OldMessageFlag && !$("#offcanvasEnd").is(":hidden")) {
       browserNotification(msg.title, msg.content);
-    } else {
-      OldMessageFlag = false;
     }
   }
+  // 非旧消息
+  OldMessageFlag = false;
+  // 下一次处理
   setTimeout("get_message('" + lst_time + "')", 3000);
 }
 
@@ -523,7 +554,6 @@ function show_mediainfo_modal(rtype, name, year, mediaid, page, rssid) {
         if (ret.page.startsWith("movie_rss") || ret.page.startsWith("tv_rss")) {
           //编辑
           $("#system_media_url_btn").text("编辑")
-              .removeAttr("target")
               .attr("href", "javascript:show_edit_rss_media_modal('" + ret.rssid + "', '" + ret.type_str + "')")
               .show();
           //刷新
@@ -533,14 +563,12 @@ function show_mediainfo_modal(rtype, name, year, mediaid, page, rssid) {
         } else {
           //详情按钮
           $("#system_media_url_btn").text("详情")
-              .attr("target", "_blank")
               .attr("href", 'javascript:navmenu("media_detail?type=' + ret.type + '&id=' + ret.tmdbid + '")')
               .show();
         }
       } else {
         //详情按钮
         $("#system_media_url_btn").text("详情")
-            .attr("target", "_blank")
             .attr("href", 'javascript:navmenu("media_detail?type=' + ret.type + '&id=' + ret.tmdbid + '")')
             .show();
         //订阅按钮
@@ -775,7 +803,7 @@ function add_rss_manual(flag) {
   $("#modal-manual-rss").modal("hide");
   ajax_post("add_rss_media", data, function (ret) {
     if (ret.code === 0) {
-      if (CURRENT_PAGE_URI.startsWith("tv_rss") || CURRENT_PAGE_URI.startsWith("movie_rss")) {
+      if (CurrentPageUri.startsWith("tv_rss") || CurrentPageUri.startsWith("movie_rss")) {
         window_history_refresh();
       } else {
         show_rss_success_modal(ret.rssid, type, name + " 添加订阅成功！");
@@ -784,7 +812,7 @@ function add_rss_manual(flag) {
         show_add_rss_media_modal(mtype);
       }
     } else {
-      if (CURRENT_PAGE_URI.startsWith("tv_rss") || CURRENT_PAGE_URI.startsWith("movie_rss")) {
+      if (CurrentPageUri.startsWith("tv_rss") || CurrentPageUri.startsWith("movie_rss")) {
         show_fail_modal(`${ret.name} 订阅失败：${ret.msg}！`, function () {
           $("#modal-manual-rss").modal("show");
         });
@@ -817,9 +845,9 @@ function change_over_edition_check(obj) {
 function remove_rss_manual(type, name, year, rssid) {
   $("#modal-manual-rss").modal('hide');
   let page;
-  if (CURRENT_PAGE_URI.startsWith("tv_rss")) {
+  if (CurrentPageUri.startsWith("tv_rss")) {
     page = "tv_rss";
-  } else if (CURRENT_PAGE_URI.startsWith("movie_rss")) {
+  } else if (CurrentPageUri.startsWith("movie_rss")) {
     page = "movie_rss";
   } else {
     page = undefined
@@ -1458,7 +1486,7 @@ function show_manual_transfer_modal(manual_type, inpath, syncmod, media_type, un
   if (!syncmod) {
     syncmod = DefaultTransferMode;
   }
-  let source = CURRENT_PAGE_URI;
+  let source = CurrentPageUri;
   $("#rename_source").val(source);
   $("#rename_manual_type").val(manual_type);
   if (manual_type === 3) {
@@ -1717,12 +1745,20 @@ function search_tmdbid_by_name(keyid, resultid) {
 
 //WEB页面发送消息
 function send_web_message(obj) {
-  let text = $(obj).val();
-  if (!text) {
+  if (!obj) {
     return
   }
-  $(obj).val("");
+  let text;
+  // 如果是jQuery对像
+  if (obj instanceof jQuery) {
+    text = obj.val();
+    obj.val("");
+  } else {
+    text = obj;
+  }
+  // 消息交互
   MessageWS.send(JSON.stringify({"text": text}));
+  // 显示自己发送的消息
   $("#system-messages").prepend(`<div class="list-group-item">
       <div class="row align-items-center">
         <div class="col text-truncate text-end">
@@ -1730,8 +1766,22 @@ function send_web_message(obj) {
           <div class="d-block text-muted text-truncate mt-n1 text-wrap text-end">${new Date().format("yyyy-MM-dd hh:mm:ss")}</div>
         </div>
         <div class="col-auto">
-          <span class="avatar">Y</span>
+          <span class="avatar">
+            <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+               <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+               <path d="M8 7a4 4 0 1 0 8 0a4 4 0 0 0 -8 0"></path>
+               <path d="M6 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"></path>
+            </svg>
+          </span>
         </div>
       </div>
     </div>`);
+  // 滚动到顶部
+  $(".offcanvas-body").animate({scrollTop:0}, 300);
+}
+
+// 初始化DropZone
+function init_dropzone() {
+  TorrentDropZone = new Dropzone("#torrent_files");
+  TorrentDropZone.options.acceptedFiles = ".torrent";
 }

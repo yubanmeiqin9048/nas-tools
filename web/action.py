@@ -8,13 +8,14 @@ import shutil
 import signal
 import sqlite3
 import time
+from math import floor
+from pathlib import Path
 from urllib.parse import unquote
 
 import cn2an
 from flask_login import logout_user, current_user
-from math import floor
 from werkzeug.security import generate_password_hash
-from pathlib import Path
+
 import log
 from app.brushtask import BrushTask
 from app.conf import SystemConfig, ModuleConf
@@ -22,8 +23,8 @@ from app.downloader import Downloader
 from app.filetransfer import FileTransfer
 from app.filter import Filter
 from app.helper import DbHelper, ProgressHelper, ThreadHelper, \
-    MetaHelper, DisplayHelper, WordsHelper, IndexerHelper, IyuuHelper
-from app.helper import RssHelper
+    MetaHelper, DisplayHelper, WordsHelper, IndexerHelper
+from app.helper import RssHelper, PluginHelper
 from app.indexer import Indexer
 from app.media import Category, Media, Bangumi, DouBan, Scraper
 from app.media.meta import MetaInfo, MetaBase
@@ -42,7 +43,7 @@ from app.utils import StringUtils, EpisodeFormat, RequestUtils, PathUtils, \
     SystemUtils, ExceptionUtils, Torrent
 from app.utils.types import RmtMode, OsType, SearchType, SyncType, MediaType, MovieTypes, TvTypes, \
     EventType, SystemConfigKey, RssType
-from config import RMT_MEDIAEXT, RMT_SUBEXT, Config
+from config import RMT_MEDIAEXT, RMT_SUBEXT, RMT_AUDIO_TRACK_EXT, Config
 from web.backend.search_torrents import search_medias_for_web, search_media_by_message
 from web.backend.user import User
 from web.backend.web_utils import WebUtils
@@ -50,8 +51,10 @@ from web.backend.web_utils import WebUtils
 
 class WebAction:
     _actions = {}
+    _commands = {}
 
     def __init__(self):
+        # WEB请求响应
         self._actions = {
             "sch": self.__sch,
             "search": self.__search,
@@ -228,8 +231,20 @@ class WebAction:
             "update_category_config": self.update_category_config,
             "get_category_config": self.get_category_config,
             "get_system_processes": self.get_system_processes,
-            "iyuu_bind_site": self.iyuu_bind_site,
             "run_plugin_method": self.run_plugin_method,
+        }
+        # 远程命令响应
+        self._commands = {
+            "/ptr": {"func": TorrentRemover().auto_remove_torrents, "desc": "自动删种"},
+            "/ptt": {"func": Downloader().transfer, "desc": "下载文件转移"},
+            "/rst": {"func": Sync().transfer_sync, "desc": "目录同步"},
+            "/rss": {"func": Rss().rssdownload, "desc": "电影/电视剧订阅"},
+            "/ssa": {"func": Subscribe().subscribe_search_all, "desc": "订阅搜索"},
+            "/tbl": {"func": self.truncate_blacklist, "desc": "清理转移缓存"},
+            "/trh": {"func": self.truncate_rsshistory, "desc": "清理RSS缓存"},
+            "/utf": {"func": self.unidentification, "desc": "重新识别"},
+            "/udt": {"func": self.update_system, "desc": "系统更新"},
+            "/sta": {"func": self.user_statistics, "desc": "站点数据统计"}
         }
 
     def action(self, cmd, data=None):
@@ -337,18 +352,6 @@ class WebAction:
         """
         if not msg:
             return
-        commands = {
-            "/ptr": {"func": TorrentRemover().auto_remove_torrents, "desc": "自动删种"},
-            "/ptt": {"func": Downloader().transfer, "desc": "下载文件转移"},
-            "/rst": {"func": Sync().transfer_sync, "desc": "目录同步"},
-            "/rss": {"func": Rss().rssdownload, "desc": "电影/电视剧订阅"},
-            "/ssa": {"func": Subscribe().subscribe_search_all, "desc": "订阅搜索"},
-            "/tbl": {"func": self.truncate_blacklist, "desc": "清理转移缓存"},
-            "/trh": {"func": self.truncate_rsshistory, "desc": "清理RSS缓存"},
-            "/utf": {"func": self.unidentification, "desc": "重新识别"},
-            "/udt": {"func": self.update_system, "desc": "系统更新"},
-            "/sta": {"func": self.user_statistics, "desc": "站点数据统计"}
-        }
 
         # 触发MessageIncoming事件
         EventManager().send_event(EventType.MessageIncoming, {
@@ -360,7 +363,7 @@ class WebAction:
         })
 
         # 系统内置命令
-        command = commands.get(msg)
+        command = self._commands.get(msg)
         if command:
             # 启动服务
             ThreadHelper().start_thread(command.get("func"), ())
@@ -1044,8 +1047,8 @@ class WebAction:
         """
         检查新版本
         """
-        version, url, flag = WebUtils.get_latest_version()
-        if flag:
+        version, url = WebUtils.get_latest_version()
+        if version:
             return {"code": 0, "version": version, "url": url}
         return {"code": -1, "version": "", "url": ""}
 
@@ -2069,6 +2072,7 @@ class WebAction:
             "effect": media_info.resource_effect,
             "pix": media_info.resource_pix,
             "team": media_info.resource_team,
+            "customization": media_info.customization,
             "video_codec": media_info.video_encode,
             "audio_codec": media_info.audio_encode,
             "org_string": media_info.org_string,
@@ -4025,6 +4029,8 @@ class WebAction:
                         flag = True
                     elif "SUBFILE" in ft and f".{str(ext).lower()}" in RMT_SUBEXT:
                         flag = True
+                    elif "AUDIOTRACKFILE" in ft and f".{str(ext).lower()}" in RMT_AUDIO_TRACK_EXT:
+                        flag = True
                     if flag:
                         r.append({
                             "path": ff.replace("\\", "/"),
@@ -4966,6 +4972,7 @@ class WebAction:
         user_plugins = SystemConfig().get(SystemConfigKey.UserInstalledPlugins) or []
         if module_id not in user_plugins:
             user_plugins.append(module_id)
+            PluginHelper.install(module_id)
         # 保存配置
         SystemConfig().set(SystemConfigKey.UserInstalledPlugins, user_plugins)
         # 重新加载插件
@@ -4996,7 +5003,9 @@ class WebAction:
         """
         获取插件列表
         """
-        return {"code": 0, "result": PluginManager().get_plugin_apps(current_user.level)}
+        plugins = PluginManager().get_plugin_apps(current_user.level)
+        statistic = PluginHelper.statistic()
+        return {"code": 0, "result": plugins, "statistic": statistic}
 
     @staticmethod
     def get_plugin_page(data):
@@ -5115,19 +5124,6 @@ class WebAction:
         return {"code": 0, "data": SystemUtils.get_all_processes()}
 
     @staticmethod
-    def iyuu_bind_site(data):
-        """
-        IYUU绑定合作站点
-        """
-        if not data.get('token'):
-            return {"code": -1, "msg": "请先填写IYUU token并保存后再进行IYUU认证！"}
-        iyuuhelper = IyuuHelper(token=data.get('token'))
-        state, msg = iyuuhelper.bind_site(site=data.get('site'),
-                                          passkey=data.get('passkey'),
-                                          uid=data.get('uid'))
-        return {"code": 0 if state else 1, "msg": msg}
-
-    @staticmethod
     def run_plugin_method(data):
         """
         运行插件方法
@@ -5140,3 +5136,15 @@ class WebAction:
         data.pop("method")
         result = PluginManager().run_plugin_method(pid=plugin_id, method=method, **data)
         return {"code": 0, "result": result}
+
+    def get_commands(self):
+        """
+        获取命令列表
+        """
+        return [{
+            "id": cid,
+            "name": cmd.get("desc")
+        } for cid, cmd in self._commands.items()] + [{
+            "id": item.get("cmd"),
+            "name": item.get("desc")
+        } for item in PluginManager().get_plugin_commands()]

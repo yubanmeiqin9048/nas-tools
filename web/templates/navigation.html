@@ -78,6 +78,7 @@
   <script src="../static/js/ace/ace.js"></script>
   <script src="../static/js/fullcalendar/fullcalendar.min.js"></script>
   <script src="../static/js/fullcalendar/locales/zh-cn.js"></script>
+  <script src="../static/js/modules/reconnecting-websocket.js"></script>
   <!-- lit -->
   <script type="module" src="../static/components/lit-index.js"></script>
   <!-- 解决密码填充问题 -->
@@ -96,11 +97,28 @@
       layout-search="{{ CurrentUser.search }}"
       >
   </layout-searchbar>
-  <div class="spinner-border" role="status" id="logo_animation" style="position:absolute;top:30%;left:calc(50% - 40px);width:80px;height:80px;"></div>
+  <div class="spinner-border" role="status" id="logo_animation"></div>
   <div class="page-wrapper" >
     <div id="page_content" hidden="">
     {{ OOPS.loading() }}
     </div>
+  </div>
+  <div class="position-fixed w-100 d-flex justify-content-between d-sm-none main-bottom-menubar">
+    <a class="card-btn border-0" href="javascript:navmenu('index')">
+      {{ SVG.home() }}
+    </a>
+    <a class="card-btn border-0" href="javascript:navmenu('ranking')">
+      {{ SVG.chart_bar() }}
+    </a>
+    <a class="card-btn border-0" href="javascript:navmenu('service')">
+      {{ SVG.layout_2() }}
+    </a>
+    <a class="card-btn border-0" href="javascript:navmenu('movie_rss')">
+      {{ SVG.movie() }}
+    </a>
+    <a class="card-btn border-0" href="javascript:navmenu('tv_rss')">
+      {{ SVG.device_tv() }}
+    </a>
   </div>
 </div>
 <div class="offcanvas offcanvas-end" tabindex="-1" id="offcanvasEnd" aria-labelledby="消息中心">
@@ -332,7 +350,7 @@
           </div>
         </div>
         <div class="d-flex">
-          <a href="#" target="_blank" class="card-btn" id="system_media_url_btn">
+          <a href="#" class="card-btn" id="system_media_url_btn">
             详情
           </a>
           <a href="javascript:void(0)" data-bs-toggle="dropdown" class="dropdown-toggle card-btn"
@@ -365,10 +383,15 @@
         <div class="select_logger">
           <h5 class="modal-title">实时日志</h5>
            <div class="dropdown">
-              <a href='#' class="btn-action" data-bs-toggle="dropdown" aria-expanded="false" onclick="get_logging_source()">
+              <button class="btn-action" data-bs-toggle="dropdown" aria-expanded="false">
                 {{ SVG.log_select() }}
-              </a>
+              </button>
               <div class="dropdown-menu dropdown-menu-end" id="dropdown-menu-logger">
+              {% with Loggers = ['All', 'System', 'Rss', 'RssChecker', 'Rmt', 'Meta', 'Sync', 'Sites', 'Brush', 'Douban', 'Spider', 'Message', 'Indexer', 'Searcher', 'Subscribe', 'Downloader', 'TorrentRemover', 'Plugin'] %}
+                {% for Logger in Loggers %}
+                <a class="dropdown-item" href="javascript:void(0)" onclick="logger_select('{{ Logger }}')">{{ Logger }}</a>
+                {% endfor %}
+              {% endwith %}
               </div>
            </div>
         </div>
