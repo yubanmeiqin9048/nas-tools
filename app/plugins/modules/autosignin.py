@@ -15,7 +15,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 from app.helper import ChromeHelper, SubmoduleHelper, SiteHelper
 from app.helper.cloudflare_helper import under_challenge
 from app.message import Message
-from app.plugins import EventHandler
+from app.plugins import EventHandler, EventManager
 from app.plugins.modules._base import _IPluginModule
 from app.sites.siteconf import SiteConf
 from app.sites.sites import Sites
@@ -47,6 +47,7 @@ class AutoSignIn(_IPluginModule):
     auth_level = 2
 
     # 私有属性
+    eventmanager = None
     siteconf = None
     _scheduler = None
 
@@ -62,6 +63,7 @@ class AutoSignIn(_IPluginModule):
     _onlyonce = False
     _notify = False
     _clean = False
+    _auto_cf = None
     # 退出事件
     _event = Event()
 
@@ -146,6 +148,18 @@ class AutoSignIn(_IPluginModule):
                                 }
                             ]
                         },
+                        {
+                            'title': '自动优选',
+                            'required': "",
+                            'tooltip': '命中重试词数量达到设置数量后，自动优化IP（需要正确配置自定义Hosts插件和优选IP插件）',
+                            'type': 'text',
+                            'content': [
+                                {
+                                    'id': 'auto_cf',
+                                    'placeholder': '10',
+                                }
+                            ]
+                        },
                     ]
                 ]
             },
@@ -183,6 +197,7 @@ class AutoSignIn(_IPluginModule):
 
     def init_config(self, config=None):
         self.siteconf = SiteConf()
+        self.eventmanager = EventManager()
 
         # 读取配置
         if config:
@@ -195,6 +210,7 @@ class AutoSignIn(_IPluginModule):
             self._queue_cnt = config.get("queue_cnt")
             self._onlyonce = config.get("onlyonce")
             self._clean = config.get("clean")
+            self._auto_cf = config.get("auto_cf")
 
         # 停止现有任务
         self.stop_service()
@@ -217,7 +233,8 @@ class AutoSignIn(_IPluginModule):
             if self._onlyonce:
                 self.info(f"签到服务启动，立即运行一次")
                 self._scheduler.add_job(self.sign_in, 'date',
-                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())))
+                                        run_date=datetime.now(tz=pytz.timezone(Config().get_timezone())) + timedelta(
+                                            seconds=3))
 
             if self._onlyonce or self._clean:
                 # 关闭一次性开关|清理缓存开关
@@ -232,7 +249,8 @@ class AutoSignIn(_IPluginModule):
                     "notify": self._notify,
                     "onlyonce": self._onlyonce,
                     "queue_cnt": self._queue_cnt,
-                    "clean": self._clean
+                    "clean": self._clean,
+                    "auto_cf": self._auto_cf
                 })
 
             # 周期运行
@@ -371,15 +389,29 @@ class AutoSignIn(_IPluginModule):
                                         "retry": retry_sites
                                     })
 
-            # 签到详细信息 登录成功、签到成功、已签到、仿真签到成功、失败--命中重试
-            signin_message = login_success_msg + sign_success_msg + already_sign_msg + fz_sign_msg + failed_msg
-            if len(retry_msg) > 0:
-                signin_message.append("——————命中重试—————")
-                signin_message += retry_msg
-            Message().send_site_signin_message(signin_message)
-
+            # 触发CF优选
+            if self._auto_cf and len(retry_sites) >= int(self._auto_cf):
+                # 获取自定义Hosts插件、CF优选插件，判断是否触发优选
+                customHosts = self.get_config("CustomHosts")
+                cloudflarespeedtest = self.get_config("CloudflareSpeedTest")
+                if customHosts and customHosts.get("enable") and cloudflarespeedtest and cloudflarespeedtest.get(
+                        "cf_ip"):
+                    self.info(f"命中重试数量 {len(retry_sites)}，开始触发优选IP插件")
+                    self.eventmanager.send_event(EventType.PluginReload,
+                                                 {
+                                                     "plugin_id": "CloudflareSpeedTest"
+                                                 })
+                else:
+                    self.info(f"命中重试数量 {len(retry_sites)}，优选IP插件未正确配置，停止触发优选IP")
             # 发送通知
             if self._notify:
+                # 签到详细信息 登录成功、签到成功、已签到、仿真签到成功、失败--命中重试
+                signin_message = login_success_msg + sign_success_msg + already_sign_msg + fz_sign_msg + failed_msg
+                if len(retry_msg) > 0:
+                    signin_message.append("——————命中重试—————")
+                    signin_message += retry_msg
+                Message().send_site_signin_message(signin_message)
+
                 next_run_time = self._scheduler.get_jobs()[0].next_run_time.strftime('%Y-%m-%d %H:%M:%S')
                 # 签到汇总信息
                 self.send_message(title="【自动签到任务完成】",
